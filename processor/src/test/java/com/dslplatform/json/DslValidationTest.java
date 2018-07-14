@@ -271,6 +271,24 @@ public class DslValidationTest extends AbstractAnnotationProcessorTest {
 	}
 
 	@Test
+	public void cantUseAnnotationOnStaticMethod() {
+		assertCompilationReturned(
+				Diagnostic.Kind.ERROR,
+				5,
+				compileTestCase(OnStaticMethod.class),
+				"No matching constructors found for 'com.dslplatform.json.models.OnStaticMethod'. Make sure there is at least one matching constructor available");
+	}
+
+	@Test
+	public void cantUseAnnotationOnNonstaticMethod() {
+		assertCompilationReturned(
+				Diagnostic.Kind.ERROR,
+				5,
+				compileTestCase(OnNonStaticMethod.class),
+				"No matching constructors found for 'com.dslplatform.json.models.OnNonStaticMethod'. Make sure there is at least one matching constructor available");
+	}
+
+	@Test
 	public void selfDeserializeAs() {
 		assertCompilationSuccessful(compileTestCase(DeserializeAsSelf.class));
 	}

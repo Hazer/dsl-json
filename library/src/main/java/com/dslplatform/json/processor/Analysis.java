@@ -42,6 +42,7 @@ public class Analysis {
 	private final Map<String, String> alternativeAlias;
 	private final Map<String, List<AnnotationMapping<Boolean>>> alternativeMandatory;
 	private final Set<String> alternativeCtors;
+	private final Set<String> alternativeFactories;
 	private final Map<String, String> alternativeIndex;
 
 	public static class AnnotationMapping<T> {
@@ -62,7 +63,7 @@ public class Analysis {
 	}
 
 	public Analysis(ProcessingEnvironment processingEnv, AnnotationUsage annotationUsage, LogLevel logLevel, Set<String> supportedTypes, ContainerSupport containerSupport) {
-		this(processingEnv, annotationUsage, logLevel, supportedTypes, containerSupport, null, null, null, null, null, null, UnknownTypes.ERROR, false, true, true, true);
+		this(processingEnv, annotationUsage, logLevel, supportedTypes, containerSupport, null, null, null, null, null, null, null, UnknownTypes.ERROR, false, true, true, true);
 	}
 
 	public Analysis(
@@ -76,6 +77,7 @@ public class Analysis {
 			Map<String, String> alternativeAlias,
 			Map<String, List<AnnotationMapping<Boolean>>> alternativeMandatory,
 			Set<String> alternativeCtors,
+			Set<String> alternativeFactories,
 			Map<String, String> alternativeIndex,
 			UnknownTypes unknownTypes,
 			boolean onlyBasicFeatures,
@@ -100,6 +102,7 @@ public class Analysis {
 		this.alternativeAlias = alternativeAlias == null ? new HashMap<String, String>() : alternativeAlias;
 		this.alternativeMandatory = alternativeMandatory == null ? new HashMap<String, List<AnnotationMapping<Boolean>>>() : alternativeMandatory;
 		this.alternativeCtors = alternativeCtors == null ? new HashSet<String>() : alternativeCtors;
+		this.alternativeFactories = alternativeFactories == null ? new HashSet<String>() : alternativeFactories;
 		this.alternativeIndex = alternativeIndex == null ? new HashMap<String, String>() : alternativeIndex;
 		this.unknownTypes = unknownTypes == null ? UnknownTypes.ERROR : unknownTypes;
 		this.onlyBasicFeatures = onlyBasicFeatures;
@@ -147,7 +150,7 @@ public class Analysis {
 		for (Map.Entry<String, StructInfo> it : structs.entrySet()) {
 			final StructInfo info = it.getValue();
 			final String className = it.getKey();
-			if (info.type == ObjectType.CLASS && info.constructor == null
+			if (info.type == ObjectType.CLASS && info.constructor == null && info.factory == null
 					&& info.converter == null && info.matchingConstructors != null) {
 				hasError = true;
 				if (info.matchingConstructors.size() == 0) {
@@ -229,7 +232,27 @@ public class Analysis {
 							info.annotation);
 				}
 			}
-			if (info.type == ObjectType.CLASS && info.converter == null && !info.hasEmptyCtor() && info.constructor != null) {
+			if (info.type == ObjectType.CLASS && info.converter == null && info.factory != null) {
+				for (VariableElement p : info.factory.getParameters()) {
+					boolean found = false;
+					String argName = p.getSimpleName().toString();
+					for (AttributeInfo attr : info.attributes.values()) {
+						if (attr.name.equals(argName)) {
+							found = true;
+							break;
+						}
+					}
+					if (!found) {
+						hasError = true;
+						messager.printMessage(
+								Diagnostic.Kind.ERROR,
+								"Unable to find matching property: '" + argName + "' used in method factory. Either use annotation processor on source code, on bytecode with -parameters flag (to enable parameter names) or manually create an instance via converter",
+								info.factory,
+								info.annotation);
+					}
+				}
+			}
+			if (info.type == ObjectType.CLASS && info.converter == null && !info.hasEmptyCtor() && info.constructor != null && info.factory == null) {
 				for (VariableElement p : info.constructor.getParameters()) {
 					boolean found = false;
 					String argName = p.getSimpleName().toString();
@@ -297,7 +320,8 @@ public class Analysis {
 						"'" + className + "' requires public no argument constructor" + info.pathDescription(),
 						info.element,
 						info.annotation);
-			} else if (info.type == ObjectType.CLASS && !onlyBasicFeatures && !info.hasEmptyCtor() && info.converter == null && (info.constructor == null || info.constructor.getParameters().size() != info.attributes.size())) {
+			} else if (info.type == ObjectType.CLASS && !onlyBasicFeatures && !info.hasEmptyCtor() && info.converter == null
+					&& info.factory == null && (info.constructor == null || info.constructor.getParameters().size() != info.attributes.size())) {
 				hasError = true;
 				messager.printMessage(
 						Diagnostic.Kind.ERROR,
@@ -308,7 +332,7 @@ public class Analysis {
 			if (info.formats.contains(CompiledJson.Format.ARRAY)) {
 				HashSet<Integer> ids = new HashSet<Integer>();
 				for (AttributeInfo attr : info.attributes.values()) {
-					if (attr.index == -1 && info.hasEmptyCtor()) {
+					if (attr.index == -1 && info.canCreateEmptyInstance()) {
 						hasError = true;
 						messager.printMessage(
 								Diagnostic.Kind.ERROR,
@@ -488,19 +512,19 @@ public class Analysis {
 				if (info.converter != null) continue;
 				path.push(info.element.getSimpleName().toString());
 				if (includeBeanMethods) {
-					for (Map.Entry<String, AccessElements> p : getBeanProperties(info.element, info.constructor).entrySet()) {
+					for (Map.Entry<String, AccessElements> p : getBeanProperties(info.element, info.constructor, info.factory).entrySet()) {
 						analyzeAttribute(info, p.getValue().read.getReturnType(), p.getKey(), p.getValue(), "bean property", path);
 					}
 				}
 				if (includeExactMethods) {
-					for (Map.Entry<String, AccessElements> p : getExactProperties(info.element, info.constructor).entrySet()) {
+					for (Map.Entry<String, AccessElements> p : getExactProperties(info.element, info.constructor, info.factory).entrySet()) {
 						if (!info.attributes.containsKey(p.getKey()) || info.annotation != null) {
 							analyzeAttribute(info, p.getValue().read.getReturnType(), p.getKey(), p.getValue(), "exact property", path);
 						}
 					}
 				}
 				if (includeFields) {
-					for (Map.Entry<String, AccessElements> f : getPublicFields(info.element, onlyBasicFeatures, info.constructor).entrySet()) {
+					for (Map.Entry<String, AccessElements> f : getPublicFields(info.element, onlyBasicFeatures, info.constructor, info.factory).entrySet()) {
 						if (!info.attributes.containsKey(f.getKey()) || info.annotation != null) {
 							analyzeAttribute(info, f.getValue().field.asType(), f.getKey(), f.getValue(), "field", path);
 						}
@@ -765,6 +789,7 @@ public class Analysis {
 							isJsonObject,
 							findMatchingConstructors(element),
 							findAnnotatedConstructor(element, discoveredBy),
+							findAnnotatedFactory(element, discoveredBy),
 							annotation,
 							onUnknown,
 							typeSignature,
@@ -845,7 +870,9 @@ public class Analysis {
 			}
 			for (AnnotationMirror ann : constructor.getAnnotationMirrors()) {
 				if (alternativeCtors.contains(ann.getAnnotationType().toString())) {
-					if (!constructor.getModifiers().contains(Modifier.PUBLIC)) {
+					if (constructor.getModifiers().contains(Modifier.PRIVATE)
+							|| constructor.getModifiers().contains(Modifier.PROTECTED)
+							|| requiresPublic(element) && !constructor.getModifiers().contains(Modifier.PUBLIC)) {
 						hasError = true;
 						messager.printMessage(
 								Diagnostic.Kind.ERROR,
@@ -854,6 +881,45 @@ public class Analysis {
 								ann);
 					}
 					return constructor;
+				}
+			}
+		}
+		return null;
+	}
+
+	public ExecutableElement findAnnotatedFactory(Element element, DeclaredType discoveredBy) {
+		if (element.getKind() == ElementKind.INTERFACE
+				|| element.getKind() == ElementKind.ENUM) {
+			return null;
+		}
+		for (ExecutableElement method : ElementFilter.methodsIn(element.getEnclosedElements())) {
+			AnnotationMirror discAnn = getAnnotation(method, discoveredBy);
+			if (discAnn != null) {
+				if (method.getModifiers().contains(Modifier.PRIVATE)
+						|| !method.getModifiers().contains(Modifier.STATIC)
+						|| requiresPublic(element) && !method.getModifiers().contains(Modifier.PUBLIC)) {
+					hasError = true;
+					messager.printMessage(
+							Diagnostic.Kind.ERROR,
+							"Factory method in '" + element.asType() + "' is annotated with " + discoveredBy + ", but it's not accessible.",
+							method,
+							discAnn);
+				}
+				return method;
+			}
+			for (AnnotationMirror ann : method.getAnnotationMirrors()) {
+				if (alternativeFactories.contains(ann.getAnnotationType().toString())) {
+					if (method.getModifiers().contains(Modifier.PRIVATE)
+							|| !method.getModifiers().contains(Modifier.STATIC)
+							|| requiresPublic(element) && !method.getModifiers().contains(Modifier.PUBLIC)) {
+						hasError = true;
+						messager.printMessage(
+								Diagnostic.Kind.ERROR,
+								"Factory method in '" + element.asType() + "' is annotated with " + ann.getAnnotationType() + ", but it's not accessible.",
+								method,
+								ann);
+					}
+					return method;
 				}
 			}
 		}
@@ -1012,10 +1078,10 @@ public class Analysis {
 		}
 	}
 
-	private Map<String, VariableElement> getCtorArguments(ExecutableElement ctor) {
-		if (ctor == null) return Collections.emptyMap();
+	private Map<String, VariableElement> getArguments(ExecutableElement element) {
+		if (element == null) return Collections.emptyMap();
 		Map<String, VariableElement> arguments = new HashMap<String, VariableElement>();
-		for (VariableElement p : ctor.getParameters()) {
+		for (VariableElement p : element.getParameters()) {
 			arguments.put(p.getSimpleName().toString(), p);
 		}
 		return arguments;
@@ -1033,10 +1099,10 @@ public class Analysis {
 		return types.isAssignable(right, left);
 	}
 
-	public Map<String, AccessElements> getBeanProperties(TypeElement element, ExecutableElement ctor) {
+	public Map<String, AccessElements> getBeanProperties(TypeElement element, ExecutableElement ctor, ExecutableElement factory) {
 		Map<String, ExecutableElement> setters = new HashMap<String, ExecutableElement>();
 		Map<String, ExecutableElement> getters = new HashMap<String, ExecutableElement>();
-		Map<String, VariableElement> arguments = getCtorArguments(ctor);
+		Map<String, VariableElement> arguments = getArguments(factory != null ? factory : ctor);
 		for (TypeElement inheritance : getTypeHierarchy(element)) {
 			boolean isPublicInterface = inheritance.getKind() == ElementKind.INTERFACE
 					&& inheritance.getModifiers().contains(Modifier.PUBLIC);
@@ -1084,10 +1150,10 @@ public class Analysis {
 		return result;
 	}
 
-	public Map<String, AccessElements> getExactProperties(TypeElement element, ExecutableElement ctor) {
+	public Map<String, AccessElements> getExactProperties(TypeElement element, ExecutableElement ctor, ExecutableElement factory) {
 		Map<String, ExecutableElement> setters = new HashMap<String, ExecutableElement>();
 		Map<String, ExecutableElement> getters = new HashMap<String, ExecutableElement>();
-		Map<String, VariableElement> arguments = getCtorArguments(ctor);
+		Map<String, VariableElement> arguments = getArguments(factory != null ? factory : ctor);
 		for (TypeElement inheritance : getTypeHierarchy(element)) {
 			boolean isPublicInterface = inheritance.getKind() == ElementKind.INTERFACE
 					&& inheritance.getModifiers().contains(Modifier.PUBLIC);
@@ -1129,9 +1195,9 @@ public class Analysis {
 		return result;
 	}
 
-	public Map<String, AccessElements> getPublicFields(TypeElement element, boolean mustHaveEmptyCtor, ExecutableElement ctor) {
+	public Map<String, AccessElements> getPublicFields(TypeElement element, boolean mustHaveEmptyCtor, ExecutableElement ctor, ExecutableElement factory) {
 		Map<String, AccessElements> result = new HashMap<String, AccessElements>();
-		Map<String, VariableElement> arguments = getCtorArguments(ctor);
+		Map<String, VariableElement> arguments = getArguments(factory != null ? factory : ctor);
 		for (TypeElement inheritance : getTypeHierarchy(element)) {
 			for (VariableElement field : ElementFilter.fieldsIn(inheritance.getEnclosedElements())) {
 				String name = field.getSimpleName().toString();
@@ -1245,6 +1311,10 @@ public class Analysis {
 	public AnnotationMirror scanClassForAnnotation(TypeElement element, DeclaredType annotationType) {
 		AnnotationMirror target = getAnnotation(element, annotationType);
 		if (target != null) return target;
+		for (ExecutableElement method : ElementFilter.methodsIn(element.getEnclosedElements())) {
+			AnnotationMirror discAnn = getAnnotation(method, annotationType);
+			if (discAnn != null) return discAnn;
+		}
 		for (ExecutableElement constructor : ElementFilter.constructorsIn(element.getEnclosedElements())) {
 			AnnotationMirror discAnn = getAnnotation(constructor, annotationType);
 			if (discAnn != null) return discAnn;

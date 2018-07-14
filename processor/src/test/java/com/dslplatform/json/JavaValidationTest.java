@@ -53,6 +53,20 @@ public class JavaValidationTest extends AbstractAnnotationProcessorTest {
 	}
 
 	@Test
+	public void canUseAnnotationOnStaticMethod() {
+		checkValidCompilation(OnStaticMethod.class);
+	}
+
+	@Test
+	public void cantUseAnnotationOnNonstaticMethod() {
+		assertCompilationReturned(
+				Diagnostic.Kind.ERROR,
+				5,
+				compileTestCase(OnNonStaticMethod.class),
+				"No matching constructors found for 'com.dslplatform.json.models.OnNonStaticMethod'. Make sure there is at least one matching constructor available");
+	}
+
+	@Test
 	public void testValidPropertyType() {
 		checkValidCompilation(ValidType.class);
 	}
